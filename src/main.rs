@@ -1,3 +1,5 @@
+mod aabb_tree;
+
 use std::{f32::consts::PI, ops::Mul};
 
 use bevy::{
@@ -12,8 +14,9 @@ use bevy::{
 };
 use itertools::Itertools;
 use sat_physic::{
-    capsule_capsule_overlap, capsule_convex_solver, local_transform, sphere_capsule_overlap,
-    sphere_convex_overlap, sphere_convex_solver, Capsule, ConvexHull, Sphere,
+    capsule_capsule_overlap, capsule_convex_solver, convex_convex_solver, local_transform,
+    sphere_capsule_overlap, sphere_convex_overlap, sphere_convex_solver, Capsule, ConvexHull,
+    Sphere,
 };
 
 fn main() {
@@ -27,7 +30,7 @@ fn main() {
         .add_plugin(WireframePlugin)
         .add_startup_system(setup)
         .add_system(collision_check)
-        .add_system(move_sphere)
+        .add_system(move_sphere.before(collision_check))
         .add_system(test_matrix)
         .run();
 }
@@ -50,7 +53,6 @@ pub fn test_matrix() {
 
     let erg = local_transform(&mat_b, &mat_a);
     let erg_vec = erg.mul_vec3(Vec3::new(1.0, 0.0, 0.0));
-    println!("mat_a, mut_b = {}", erg_vec);
 }
 
 pub fn setup(
@@ -69,12 +71,42 @@ pub fn setup(
         Vec3::new(-0.5, -0.5, 0.5),  //6
         Vec3::new(-0.5, -0.5, -0.5), //7
     ];
+    let mut te = Transform::from_xyz(1.0, 0.0, 0.0);
+    te.rotate_axis(Vec3::new(0.0, 1.0, 0.0), 45.0);
     commands.spawn((
-        ConvexHull::new(Vec3::new(0.0, 0.0, 0.0), vertices),
+        ConvexHull::new(
+            Vec3::new(1.0, 0.0, 0.0),
+            vertices.clone(),
+            Vec3::new(0.0, 1.0, 0.0),
+            45.0,
+        ),
         PbrBundle {
             mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
             material: materials.add(Color::rgba(0.8, 0.7, 0.6, 1.0).into()),
-            transform: Transform::from_xyz(0.0, 0.0, 0.0),
+            transform: te,
+            ..default()
+        },
+        Wireframe,
+    ));
+
+    commands.spawn((PbrBundle {
+        mesh: meshes.add(Mesh::from(shape::Cube { size: 0.1 })),
+        material: materials.add(Color::rgb(0.0, 0.0, 1.0).into()),
+        transform: Transform::from_xyz(0.0, 0.0, 0.0),
+        ..default()
+    },));
+
+    commands.spawn((
+        ConvexHull::new(
+            Vec3::new(2.0, 0.0, 0.0),
+            vertices,
+            Vec3::new(1.0, 0.0, 0.0),
+            0.0,
+        ),
+        PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+            material: materials.add(Color::rgba(0.8, 0.7, 0.6, 1.0).into()),
+            transform: Transform::from_xyz(2.0, 0.0, 0.0),
             ..default()
         },
     ));
@@ -183,8 +215,8 @@ pub fn setup(
     });
 
     commands.spawn(Camera3dBundle {
-        transform: Transform::from_xyz(-0.5, -0.5, 5.0)
-            .looking_at(Vec3::new(-0.5, -0.5, 0.0), Vec3::Y),
+        transform: Transform::from_xyz(1.5, 0.0, 2.0)
+            .looking_at(Vec3::new(1.5, -0.0, 0.0), Vec3::Y),
         ..default()
     });
 }
@@ -192,7 +224,7 @@ pub fn setup(
 pub fn collision_check(
     mut commands: Commands,
     spheres: Query<&Capsule>,
-    capsules: Query<&mut ConvexHull, Without<DebugSimplex>>,
+    mut capsules: Query<(&mut ConvexHull, &mut Transform), Without<DebugSimplex>>,
     debug_cubes: Query<Entity, With<DebugSimplex>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -213,7 +245,39 @@ pub fn collision_check(
         commands.entity(cub).despawn();
     }
 
-    for sp_collision in spheres.into_iter() {
+    let mut move_: Vec3 = Vec3::default();
+
+    for (convex1, convex2) in capsules
+        .iter()
+        .step_by(2)
+        .zip(capsules.iter().skip(1).step_by(2))
+    {
+        let manifold = convex_convex_solver(&convex1.0, &convex2.0);
+        if manifold.point_count > 0 {
+            println!(
+                "collision poins: {}, distance: {}, normal dir: {}",
+                manifold.point_count, manifold.points[0].penetration, manifold.normal
+            );
+            move_ = manifold.points[0].penetration * manifold.normal;
+            for i in 0..manifold.point_count {
+                println!("index; {}", i);
+                commands.spawn((
+                    PbrBundle {
+                        mesh: meshes.add(Mesh::from(shape::Cube { size: 0.1 })),
+                        material: materials.add(Color::rgb(0.0, 1.0, 0.0).into()),
+                        transform: Transform::from_translation(manifold.points[i].position),
+                        ..default()
+                    },
+                    DebugSimplex {},
+                ));
+            }
+        }
+    }
+    for mut convex1 in capsules.iter_mut().take(1) {
+        convex1.0.center = convex1.0.center + move_;
+        convex1.1.translation = convex1.1.translation + move_;
+    }
+    /*for sp_collision in spheres.into_iter() {
         for cap_collision in capsules.iter() {
             //cap_collision.create_planes_box();
             //let collide = sphere_convex_overlap(sp_collision, cap_collision);
@@ -296,12 +360,12 @@ pub fn collision_check(
                 ));
             } */
         }
-    }
+    }*/
 }
 
 pub fn move_sphere(
     keyboard_input: Res<Input<KeyCode>>,
-    mut spheres: Query<(&mut Capsule, &mut Transform)>,
+    mut spheres: Query<(&mut ConvexHull, &mut Transform)>,
     time: Res<Time>,
 ) {
     let mut direction = Vec3::ZERO;
@@ -329,8 +393,8 @@ pub fn move_sphere(
     let mut x = 0;
     for (mut col, mut ren) in &mut spheres {
         if x == 0 {
-            col.upper_center += direction;
-            col.lower_center += direction;
+            col.center += direction;
+            //col.lower_center += direction;
             ren.translation += direction;
             x += 1;
         }
