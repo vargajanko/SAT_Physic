@@ -250,6 +250,7 @@ mod tests {
             edges: Default::default(),
             faces: Default::default(),
             planes: Default::default(),
+            orientation: todo!(),
         };
         let point = Vec3::new(1.1149588, -0.24032414, -0.15938933);
         let (gjka, what, _, _) = gjk(&convex, &point);
