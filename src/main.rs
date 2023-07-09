@@ -1,8 +1,8 @@
-mod aabb_tree;
+use std::f32::consts::PI;
 
-use std::{f32::consts::PI, ops::Mul};
-
+use aabb_tree::{MovedAabbs, Tree};
 use bevy::{
+    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     math::Vec3A,
     pbr::wireframe::{Wireframe, WireframePlugin},
     prelude::{system_adapter::new, *},
@@ -14,9 +14,7 @@ use bevy::{
 };
 use itertools::Itertools;
 use sat_physic::{
-    capsule_capsule_overlap, capsule_convex_solver, convex_convex_solver, local_transform,
-    sphere_capsule_overlap, sphere_convex_overlap, sphere_convex_solver, Capsule, ConvexHull,
-    Sphere,
+    convex_convex_solver, create_planes_box, local_transform, Capsule, ConvexHull, Sphere,
 };
 
 fn main() {
@@ -27,9 +25,14 @@ fn main() {
                 ..default()
             },
         }))
+        .init_resource::<Tree>()
+        .init_resource::<MovedAabbs>()
         .add_plugin(WireframePlugin)
         .add_startup_system(setup)
-        .add_system(collision_check)
+        .add_system(collision_broad_phase)
+        //.add_system(collision_check)
+        .add_plugin(LogDiagnosticsPlugin::default())
+        .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_system(move_sphere.before(collision_check))
         .add_system(test_matrix)
         .run();
@@ -37,6 +40,38 @@ fn main() {
 
 #[derive(Component)]
 pub struct DebugSimplex {}
+
+#[derive(Component)]
+pub struct Collider {
+    pub collider_id: usize,
+    pub convex_hull: ConvexHull,
+}
+
+impl Collider {
+    pub fn new(
+        position: Vec3,
+        vertices: Vec<Vec3>,
+        axis: Vec3,
+        angle: f32,
+        tree: &mut ResMut<Tree>,
+    ) -> Self {
+        let mut x = ConvexHull {
+            center: position,
+            vertices: vertices.clone(),
+            edges: Default::default(),
+            faces: Default::default(),
+            planes: create_planes_box(vertices),
+            orientation: Quat::from_axis_angle(axis, angle),
+        };
+
+        x.create_halfedges();
+        println!("{:?}", x.create_aabb());
+        Collider {
+            collider_id: tree.create_aabb(&x.create_aabb()),
+            convex_hull: x,
+        }
+    }
+}
 
 pub fn test_matrix() {
     let mat_a = Mat3::from_cols(
@@ -59,6 +94,7 @@ pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut tree: ResMut<Tree>,
 ) {
     //Cube for rendering and physics
     let vertices = vec![
@@ -71,15 +107,15 @@ pub fn setup(
         Vec3::new(-0.5, -0.5, 0.5),  //6
         Vec3::new(-0.5, -0.5, -0.5), //7
     ];
-    let mut te = Transform::from_xyz(1.0, 0.0, 0.0);
-    te.rotate_axis(Vec3::new(0.0, 1.0, 0.0), 45.0);
+
+    let position = Vec3::new(1.0, 0.0, 0.0);
+    let angle = 45.0;
+    let rotation_axis = Vec3::new(0.0, 1.0, 0.0);
+    let mut te = Transform::from_translation(position);
+    te.rotate_axis(rotation_axis, angle);
+
     commands.spawn((
-        ConvexHull::new(
-            Vec3::new(1.0, 0.0, 0.0),
-            vertices.clone(),
-            Vec3::new(0.0, 1.0, 0.0),
-            45.0,
-        ),
+        Collider::new(position, vertices.clone(), rotation_axis, angle, &mut tree),
         PbrBundle {
             mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
             material: materials.add(Color::rgba(0.8, 0.7, 0.6, 1.0).into()),
@@ -96,17 +132,18 @@ pub fn setup(
         ..default()
     },));
 
+    let position = Vec3::new(2.0, 0.0, 0.0);
+    let angle = 0.0;
+    let rotation_axis = Vec3::new(1.0, 0.0, 0.0);
+    let mut te = Transform::from_translation(position);
+    te.rotate_axis(rotation_axis, angle);
+
     commands.spawn((
-        ConvexHull::new(
-            Vec3::new(2.0, 0.0, 0.0),
-            vertices,
-            Vec3::new(1.0, 0.0, 0.0),
-            0.0,
-        ),
+        Collider::new(position, vertices, rotation_axis, angle, &mut tree),
         PbrBundle {
             mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
             material: materials.add(Color::rgba(0.8, 0.7, 0.6, 1.0).into()),
-            transform: Transform::from_xyz(2.0, 0.0, 0.0),
+            transform: te,
             ..default()
         },
     ));
@@ -152,58 +189,7 @@ pub fn setup(
         },
         Wireframe,
     ));
-    /*
-        commands.spawn((
-            Capsule {
-                radius: 1.0,
-                upper_center: Vec3 {
-                    x: 1.0,
-                    y: 1.0,
-                    z: 0.0,
-                },
-                lower_center: Vec3 {
-                    x: 1.0,
-                    y: -1.0,
-                    z: 0.0,
-                },
-            },
-            PbrBundle {
-                mesh: meshes.add(Mesh::from(shape::Capsule {
-                    radius: 1.0,
-                    rings: 5,
-                    depth: 2.0,
-                    latitudes: 20,
-                    longitudes: 20,
-                    uv_profile: default(),
-                })),
-                material: materials.add(Color::rgb(0.8, 0.7, 0.6).into()),
-                transform: Transform::from_xyz(1.0, 0.0, 0.0),
-                ..default()
-            },
-        ));
-    */
-    //Sphere for rendering and for collision
-    /*commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(
-                    shape::Icosphere {
-                        radius: 0.5,
-                        subdivisions: 4,
-                    }
-                    .try_into()
-                    .unwrap(),
-                ),
-                material: materials.add(Color::rgba(0.8, 0.7, 0.6, 0.0).into()),
-                transform: Transform::from_xyz(-0.025533473, -0.6021381, 0.30380815),
-                ..default()
-            },
-            Sphere {
-                center: Vec3::new(-0.025533473, -0.6021381, 0.30380815),
-                radius: 0.5,
-            },
-            Wireframe,
-        ));
-    */
+
     commands.spawn(PointLightBundle {
         point_light: PointLight {
             intensity: 1500.0,
@@ -221,26 +207,27 @@ pub fn setup(
     });
 }
 
+pub fn collision_broad_phase(
+    mut commands: Commands,
+    start: ResMut<Tree>,
+    mut moved: ResMut<MovedAabbs>,
+) {
+    //start.create_aabb(aabb)
+    for moved_aabb in &moved.moved_aabbs {
+        start.query_all_leafs(0);
+    }
+
+    moved.moved_aabbs.clear();
+}
+
 pub fn collision_check(
     mut commands: Commands,
     spheres: Query<&Capsule>,
-    mut capsules: Query<(&mut ConvexHull, &mut Transform), Without<DebugSimplex>>,
+    mut capsules: Query<(&mut Collider, &mut Transform), Without<DebugSimplex>>,
     debug_cubes: Query<Entity, With<DebugSimplex>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    /*for sp_collision in spheres.into_iter() {
-        for cap_collision in capsules.into_iter() {
-            let collide = sphere_capsule_overlap(sp_collision, cap_collision);
-            //println!("Does sphere and capsule collide? {}", collide);
-        }
-    }*/
-
-    /*for capa_collision in capsules.into_iter().combinations(2) {
-        let collide = capsule_capsule_overlap(capa_collision[0], capa_collision[1]);
-        println!("Does capsule and capsule collide? {}", collide);
-    }*/
-
     for cub in debug_cubes.iter() {
         commands.entity(cub).despawn();
     }
@@ -252,7 +239,7 @@ pub fn collision_check(
         .step_by(2)
         .zip(capsules.iter().skip(1).step_by(2))
     {
-        let manifold = convex_convex_solver(&convex1.0, &convex2.0);
+        let manifold = convex_convex_solver(&convex1.0.convex_hull, &convex2.0.convex_hull);
         if manifold.point_count > 0 {
             println!(
                 "collision poins: {}, distance: {}, normal dir: {}",
@@ -274,98 +261,16 @@ pub fn collision_check(
         }
     }
     for mut convex1 in capsules.iter_mut().take(1) {
-        convex1.0.center = convex1.0.center + move_;
-        convex1.1.translation = convex1.1.translation + move_;
+        convex1.0.convex_hull.center += move_;
+        convex1.1.translation += move_;
     }
-    /*for sp_collision in spheres.into_iter() {
-        for cap_collision in capsules.iter() {
-            //cap_collision.create_planes_box();
-            //let collide = sphere_convex_overlap(sp_collision, cap_collision);
-            //draw the found simplex
-            let manifold = capsule_convex_solver(sp_collision, cap_collision);
-
-            /* if manifold.point_count == 1 {
-                println!("deep penetration");
-                println!("normal {}", manifold.normal);
-            } else if manifold.point_count == 2 {
-                println!("shallow penetration");
-            } else {
-                println!("no penetration");
-            }*/
-            println!(
-                "contact point: {}, minimum distance: {}",
-                manifold.points[0].position, manifold.points[0].penetration
-            );
-            if manifold.points[0].penetration < 0.0 {
-                println!("shallow pene");
-            }
-            /*commands.spawn((
-                PbrBundle {
-                    mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-                    material: materials.add(Color::rgba(1.0, 0.0, 0.0, 0.0).into()),
-                    transform: Transform::from_translation(
-                        cap_collision.center - sp_collision.center,
-                    ),
-                    ..default()
-                },
-                DebugSimplex {},
-                Wireframe,
-            ));*/
-
-            commands.spawn((
-                PbrBundle {
-                    mesh: meshes.add(Mesh::from(shape::Cube { size: 0.1 })),
-                    material: materials.add(Color::rgb(0.0, 1.0, 0.0).into()),
-                    transform: Transform::from_translation(sp_collision.lower_center),
-                    ..default()
-                },
-                DebugSimplex {},
-            ));
-
-            commands.spawn((
-                PbrBundle {
-                    mesh: meshes.add(Mesh::from(shape::Cube { size: 0.1 })),
-                    material: materials.add(Color::rgb(0.0, 1.0, 0.0).into()),
-                    transform: Transform::from_translation(sp_collision.upper_center),
-                    ..default()
-                },
-                DebugSimplex {},
-            ));
-
-            commands.spawn((
-                PbrBundle {
-                    mesh: meshes.add(Mesh::from(shape::Cube { size: 0.2 })),
-                    material: materials.add(Color::rgb(0.0, 1.0, 1.0).into()),
-                    transform: Transform::from_translation(manifold.points[0].position),
-                    ..default()
-                },
-                DebugSimplex {},
-            ));
-            let mut color_code = [Vec3::default(); 4];
-            color_code[0] = Vec3::new(1.0, 0.0, 0.0);
-            color_code[1] = Vec3::new(1.0, 1.0, 1.0);
-            color_code[2] = Vec3::new(0.0, 0.0, 1.0);
-            color_code[3] = Vec3::new(1.0, 1.0, 1.0);
-            /*for w in 0..collide.1 {
-                commands.spawn((
-                    PbrBundle {
-                        mesh: meshes.add(Mesh::from(shape::Cube { size: 0.1 })),
-                        material: materials.add(
-                            Color::rgb(color_code[w].x, color_code[w].y, color_code[w].z).into(),
-                        ),
-                        transform: Transform::from_translation(collide.2[w]),
-                        ..default()
-                    },
-                    DebugSimplex {},
-                ));
-            } */
-        }
-    }*/
 }
 
 pub fn move_sphere(
     keyboard_input: Res<Input<KeyCode>>,
-    mut spheres: Query<(&mut ConvexHull, &mut Transform)>,
+    mut spheres: Query<(&mut Collider, &mut Transform)>,
+    mut tree: ResMut<Tree>,
+    mut moved: ResMut<MovedAabbs>,
     time: Res<Time>,
 ) {
     let mut direction = Vec3::ZERO;
@@ -393,10 +298,14 @@ pub fn move_sphere(
     let mut x = 0;
     for (mut col, mut ren) in &mut spheres {
         if x == 0 {
-            col.center += direction;
+            col.convex_hull.center += direction;
             //col.lower_center += direction;
             ren.translation += direction;
             x += 1;
+            if direction != Vec3::ZERO {
+                moved.moved_aabbs.push(col.collider_id);
+                tree.move_aabb(col.collider_id, &col.convex_hull.create_aabb());
+            }
         }
     }
 }

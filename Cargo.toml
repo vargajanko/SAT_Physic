@@ -11,3 +11,6 @@ opt-level = 3
 [dependencies]
 bevy = { path = "../bevy" }
 itertools = "0.10.5"
+log = "0.4.19"
+simplelog = "0.12.1"
+aabb_tree = { path = "../aabb_tree" }

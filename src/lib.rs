@@ -1,12 +1,10 @@
-use std::ops::Neg;
-
-use crate::gjk::gjk;
 mod gjk;
+use crate::gjk::gjk;
+use aabb_tree::Aabb;
 use bevy::{
     math::*,
     prelude::{Component, Transform},
 };
-
 #[derive(Default, Clone, Copy)]
 pub struct Contactpoint {
     pub position: Vec3,
@@ -228,7 +226,7 @@ pub fn sphere_sphere_solver(a: &Sphere, b: &Sphere) -> ContactManifold<1> {
     let normal: Vec3 = (b.center - a.center) / middle_origin;
     let penetration = middle_origin - b.radius - a.radius;
     let point = [Contactpoint {
-        position: normal * a.radius + a.center - penetration * 0.5f32,
+        position: normal * a.radius + a.center - penetration * 0.5,
         penetration,
     }];
     ContactManifold {
@@ -265,7 +263,6 @@ pub fn max_signed_distance(a_convex: &ConvexHull, b_convex: &ConvexHull) -> (f32
     //
     let mut longest_distance = f32::MIN;
     let mut longest_index = 0;
-    // TODO also add rotation
     let transform_a_to_local_b = a_convex.center - b_convex.center;
 
     let rotation_a_to_b = a_convex
@@ -899,6 +896,24 @@ impl ConvexHull {
 
     fn get_plane(&self, index: usize) -> &Plane {
         &self.planes[index]
+    }
+
+    pub fn create_aabb(&self) -> Aabb {
+        let mut lower = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut upper = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+
+        for point in &self.vertices {
+            lower.x = lower.x.min(point.x + self.center.x);
+            lower.y = lower.y.min(point.y + self.center.y);
+            lower.z = lower.z.min(point.z + self.center.z);
+
+            upper.x = upper.x.max(point.x + self.center.x);
+            upper.y = upper.y.max(point.y + self.center.y);
+            upper.z = upper.z.max(point.z + self.center.z);
+        }
+
+        //println!("lower: {}, upper: {}", lower, upper);
+        Aabb::new(lower, upper)
     }
 
     fn get_support(&self, direction: &Vec3) -> Vec3 {

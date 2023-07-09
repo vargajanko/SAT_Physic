@@ -1,9 +1,6 @@
 use std::ops::Neg;
 
-use bevy::{
-    math::*,
-    prelude::{Component, Transform},
-};
+use bevy::math::*;
 
 use crate::{closet_point_on_segment, ConvexHull, GjkSupport};
 
